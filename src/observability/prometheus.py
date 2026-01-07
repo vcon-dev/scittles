@@ -23,8 +23,20 @@ def setup_prometheus_exporter() -> PrometheusMetricReader:
             # Recreate the provider with the new reader
             # This is necessary because metric_readers are set at provider creation
             from opentelemetry.sdk.resources import Resource
-            resource = meter_provider._resource
-            existing_readers = list(meter_provider._metric_readers)
+            # Get resource from provider if available, otherwise create default
+            try:
+                resource = meter_provider._resource
+            except AttributeError:
+                # Fallback to default resource if _resource is not accessible
+                resource = Resource.create({"service.name": "scittles"})
+            # Get existing readers - try both attribute names for compatibility
+            try:
+                existing_readers = list(meter_provider._all_metric_readers)
+            except AttributeError:
+                try:
+                    existing_readers = list(meter_provider._metric_readers)
+                except AttributeError:
+                    existing_readers = []
             existing_readers.append(_prometheus_reader)
             new_provider = MeterProvider(resource=resource, metric_readers=existing_readers)
             metrics.set_meter_provider(new_provider)

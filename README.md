@@ -44,6 +44,86 @@ scittles
 
 The service starts on `http://localhost:8000` by default.
 
+### Docker Deployment
+
+Scittles can be run as a Docker container for easy deployment and isolation.
+
+#### Quick Start with Docker Compose
+
+```bash
+# Build and start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the service
+docker-compose down
+```
+
+The service will be available at `http://localhost:8000`. The database is persisted in the `./data` directory on the host.
+
+#### Building the Docker Image
+
+```bash
+# Build the image
+docker build -t scittles:latest .
+
+# Run the container
+docker run -d \
+  --name scittles \
+  -p 8000:8000 \
+  -v $(pwd)/data:/app/data \
+  -e SCITT_SERVICE_URL=https://your-service-url.example \
+  scittles:latest
+```
+
+#### Environment Variables
+
+Configure the service using environment variables (prefix `SCITT_`):
+
+**Core Configuration:**
+- `SCITT_DB_PATH` - Database file path (default: `/app/data/transparency.db`)
+- `SCITT_SERVICE_URL` - Public service URL (required for production)
+- `SCITT_HOST` - Bind address (default: `0.0.0.0`)
+- `SCITT_PORT` - Server port (default: `8000`)
+
+**Observability Configuration:**
+- `SCITT_LOG_LEVEL` - Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default: `INFO`)
+- `SCITT_LOG_FORMAT` - Log format: `json` or `text` (default: `json` in Docker)
+- `SCITT_OTEL_ENABLED` - Enable OpenTelemetry (default: `true`)
+- `SCITT_OTEL_SERVICE_NAME` - Service name for traces (default: `scittles`)
+- `SCITT_OTEL_EXPORTER` - Comma-separated exporters: `console`, `otlp`, `prometheus` (default: `prometheus,console`)
+- `SCITT_OTEL_ENDPOINT` - OTLP endpoint URL (e.g., `http://otel-collector:4317`)
+- `SCITT_OTEL_HEADERS` - OTLP headers as comma-separated `key=value` pairs
+- `SCITT_PROMETHEUS_PORT` - Prometheus port configuration (metrics served at `/metrics` on main port)
+
+#### Prometheus Metrics
+
+When the Prometheus exporter is enabled (default in Docker), metrics are available at:
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+The metrics endpoint exposes HTTP, database, Merkle tree, receipt, and entry registration metrics compatible with Prometheus scraping.
+
+#### Health Checks
+
+The service includes a health check endpoint:
+
+```bash
+curl http://localhost:8000/.well-known/transparency-configuration
+```
+
+Docker Compose automatically configures health checks using this endpoint.
+
+#### Volume Persistence
+
+The database is stored in `./data/transparency.db` on the host, ensuring data persists across container restarts. Make sure to back up this directory in production.
+
+For more detailed Docker documentation, see [docker/README.md](docker/README.md).
+
 ### Configuration
 
 Configure via environment variables (prefix `SCITT_`):
@@ -115,6 +195,9 @@ scittles/
 │   │   └── schema.sql
 │   ├── config.py      # Configuration management
 │   └── main.py        # Application entry point
+├── examples/          # Client integration examples
+│   ├── client_example.py
+│   └── README.md
 └── tests/             # Test suite
 ```
 
@@ -143,7 +226,9 @@ Append-only log with:
 
 ## Usage Examples
 
-### Python Client
+See the [`examples/`](examples/) directory for complete working examples demonstrating integration with the Scittles service.
+
+### Quick Example
 
 ```python
 import httpx
@@ -174,6 +259,18 @@ async with httpx.AsyncClient() as client:
         receipt = response.content
         print(f"Registered: {entry_id}")
 ```
+
+### Running the Example Script
+
+```bash
+# Start the service (if not already running)
+docker-compose up -d
+
+# Run the example client
+python3 examples/client_example.py
+```
+
+For more detailed examples and integration patterns, see [examples/README.md](examples/README.md).
 
 ### cURL Examples
 
