@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     # Performance
     max_tree_cache_size: int = 10000
 
+    # Observability - Logging
+    log_level: str = "INFO"  # DEBUG, INFO, WARNING, ERROR
+    log_format: str = "text"  # json or text
+
+    # Observability - OpenTelemetry
+    otel_enabled: bool = True
+    otel_service_name: str = "scittles"
+    otel_exporter: str = "console"  # console, otlp, prometheus, or comma-separated list
+    otel_endpoint: Optional[str] = None  # OTLP endpoint URL (e.g., http://localhost:4317)
+    otel_headers: Optional[str] = None  # OTLP headers as comma-separated key=value pairs
+    prometheus_port: int = 9090  # Port for Prometheus metrics endpoint
+
     model_config = {"env_prefix": "SCITT_", "env_file": ".env"}
 
 

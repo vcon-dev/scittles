@@ -1,5 +1,14 @@
 import hashlib
+import time
 from typing import List, Optional
+from opentelemetry import trace
+
+from ..observability.logging import get_logger
+from ..observability.metrics import get_metrics
+
+logger = get_logger(__name__)
+metrics = get_metrics()
+tracer = trace.get_tracer(__name__)
 
 
 class MerkleTree:
@@ -193,17 +202,45 @@ class MerkleTreeBuilder:
         Returns:
             Leaf index
         """
-        leaf_index = len(self._leaf_cache)
-        self._leaf_cache.append(leaf_data)
+        start_time = time.time()
 
-        # Calculate and store root for this tree size
-        tree_size = leaf_index + 1
-        root = MerkleTree.calculate_root(self._leaf_cache[:tree_size])
+        with tracer.start_as_current_span("merkle.add_leaf") as span:
+            try:
+                leaf_index = len(self._leaf_cache)
+                self._leaf_cache.append(leaf_data)
 
-        if root:
-            await self.storage.store_merkle_node(tree_size, 0, root)
+                # Calculate and store root for this tree size
+                tree_size = leaf_index + 1
+                root = MerkleTree.calculate_root(self._leaf_cache[:tree_size])
 
-        return leaf_index
+                span.set_attribute("merkle.leaf_index", leaf_index)
+                span.set_attribute("merkle.tree_size", tree_size)
+
+                if root:
+                    await self.storage.store_merkle_node(tree_size, 0, root)
+
+                duration = time.time() - start_time
+                metrics.merkle_operation_duration.record(duration, {"operation": "add_leaf"})
+                metrics.merkle_tree_size.add(1)
+
+                logger.debug(
+                    "merkle_leaf_added",
+                    leaf_index=leaf_index,
+                    tree_size=tree_size,
+                    duration_seconds=duration,
+                )
+
+                return leaf_index
+
+            except Exception as e:
+                duration = time.time() - start_time
+                span.record_exception(e)
+                logger.exception(
+                    "merkle_operation_failed",
+                    operation="add_leaf",
+                    error=str(e),
+                )
+                raise
 
     async def get_inclusion_proof(
         self, leaf_index: int, tree_size: Optional[int] = None
@@ -218,12 +255,49 @@ class MerkleTreeBuilder:
         Returns:
             Inclusion proof
         """
-        if tree_size is None:
-            tree_size = len(self._leaf_cache)
+        start_time = time.time()
 
-        return MerkleTree.generate_inclusion_proof(
-            leaf_index, tree_size, self._leaf_cache
-        )
+        with tracer.start_as_current_span("merkle.get_inclusion_proof") as span:
+            span.set_attribute("merkle.leaf_index", leaf_index)
+
+            try:
+                if tree_size is None:
+                    tree_size = len(self._leaf_cache)
+
+                span.set_attribute("merkle.tree_size", tree_size)
+
+                proof = MerkleTree.generate_inclusion_proof(
+                    leaf_index, tree_size, self._leaf_cache
+                )
+
+                duration = time.time() - start_time
+                metrics.merkle_operation_duration.record(
+                    duration, {"operation": "get_inclusion_proof"}
+                )
+                metrics.merkle_proof_generation_count.add(1)
+                span.set_attribute("merkle.proof_length", len(proof))
+
+                logger.debug(
+                    "merkle_proof_generated",
+                    leaf_index=leaf_index,
+                    tree_size=tree_size,
+                    proof_length=len(proof),
+                    duration_seconds=duration,
+                )
+
+                return proof
+
+            except Exception as e:
+                duration = time.time() - start_time
+                span.record_exception(e)
+                logger.exception(
+                    "merkle_operation_failed",
+                    operation="get_inclusion_proof",
+                    leaf_index=leaf_index,
+                    tree_size=tree_size,
+                    error=str(e),
+                )
+                raise
 
     async def get_root(self, tree_size: Optional[int] = None) -> Optional[bytes]:
         """Get root hash for a specific tree size."""

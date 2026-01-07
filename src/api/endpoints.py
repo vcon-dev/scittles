@@ -1,10 +1,18 @@
 from fastapi import FastAPI, Response, Request, status
 import cbor2
+import time
+from opentelemetry import trace
 
 from ..storage.sqlite_store import SQLiteStore
 from ..core.merkle import MerkleTreeBuilder
 from ..core.receipts import ReceiptGenerator, StatementValidator
 from .models import TransparencyConfiguration
+from ..observability.logging import get_logger
+from ..observability.metrics import get_metrics
+
+logger = get_logger(__name__)
+metrics = get_metrics()
+tracer = trace.get_tracer(__name__)
 
 
 class TransparencyServiceAPI:
@@ -55,47 +63,176 @@ class TransparencyServiceAPI:
 
             SCRAPI Section 2.1.2: Register Signed Statement
             """
-            # Read COSE Sign1 from body
-            cose_sign1 = await request.body()
+            start_time = time.time()
+            request_id = getattr(request.state, "request_id", None)
 
-            if not cose_sign1:
-                return self._error_response(
-                    "Payload Missing", "Signed Statement payload must be present", 400
-                )
+            with tracer.start_as_current_span("register_statement") as span:
+                # Read COSE Sign1 from body
+                cose_sign1 = await request.body()
 
-            try:
-                # Extract statement hash
-                statement_hash = StatementValidator.extract_statement_hash(cose_sign1)
-
-                # Extract metadata
-                metadata = StatementValidator.extract_metadata(cose_sign1)
-
-                # Check if already registered
-                existing = await self.storage.get_entry_by_hash(statement_hash)
-                if existing:
+                if not cose_sign1:
+                    logger.warning(
+                        "registration_failed",
+                        request_id=request_id,
+                        reason="payload_missing",
+                    )
                     return self._error_response(
-                        "Already Registered",
-                        "Statement with this hash already registered",
-                        400,
+                        "Payload Missing", "Signed Statement payload must be present", 400
                     )
 
-                # Append to log
-                leaf_index = await self.storage.append_entry(
-                    statement_hash=statement_hash,
-                    cose_sign1=cose_sign1,
-                    issuer=metadata.get("issuer"),
-                    subject=metadata.get("subject"),
-                    content_type=metadata.get("content_type"),
-                )
+                try:
+                    # Extract statement hash
+                    statement_hash = StatementValidator.extract_statement_hash(cose_sign1)
+                    entry_id = statement_hash.hex()
+                    span.set_attribute("entry.id", entry_id)
+                    span.set_attribute("statement.hash", entry_id)
 
-                # Add to Merkle tree
-                await self.merkle_builder.add_leaf(statement_hash)
+                    # Extract metadata
+                    metadata = StatementValidator.extract_metadata(cose_sign1)
+                    if metadata.get("issuer"):
+                        span.set_attribute("statement.issuer", metadata.get("issuer"))
+                    if metadata.get("subject"):
+                        span.set_attribute("statement.subject", metadata.get("subject"))
+
+                    logger.info(
+                        "registration_started",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                        issuer=metadata.get("issuer"),
+                        subject=metadata.get("subject"),
+                    )
+
+                    # Check if already registered
+                    existing = await self.storage.get_entry_by_hash(statement_hash)
+                    if existing:
+                        logger.warning(
+                            "registration_failed",
+                            request_id=request_id,
+                            entry_id=entry_id,
+                            reason="already_registered",
+                        )
+                        return self._error_response(
+                            "Already Registered",
+                            "Statement with this hash already registered",
+                            400,
+                        )
+
+                    # Append to log
+                    leaf_index = await self.storage.append_entry(
+                        statement_hash=statement_hash,
+                        cose_sign1=cose_sign1,
+                        issuer=metadata.get("issuer"),
+                        subject=metadata.get("subject"),
+                        content_type=metadata.get("content_type"),
+                    )
+                    span.set_attribute("entry.leaf_index", leaf_index)
+
+                    # Add to Merkle tree
+                    await self.merkle_builder.add_leaf(statement_hash)
+                    tree_size = await self.storage.get_tree_size()
+                    span.set_attribute("merkle.tree_size", tree_size)
+
+                    # Generate inclusion proof
+                    inclusion_proof = await self.merkle_builder.get_inclusion_proof(
+                        leaf_index, tree_size
+                    )
+                    span.set_attribute("merkle.proof_length", len(inclusion_proof))
+
+                    # Generate receipt
+                    receipt = self.receipt_generator.create_receipt(
+                        statement_hash=statement_hash,
+                        leaf_index=leaf_index,
+                        tree_size=tree_size,
+                        inclusion_proof=inclusion_proof,
+                        issuer=metadata.get("issuer"),
+                        subject=metadata.get("subject"),
+                    )
+
+                    # Return receipt with location
+                    location = f"{self.service_url}/entries/{entry_id}"
+
+                    duration = time.time() - start_time
+                    metrics.entry_registration_count.add(1)
+                    metrics.entry_registration_duration.record(duration)
+
+                    logger.info(
+                        "registration_completed",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                        leaf_index=leaf_index,
+                        tree_size=tree_size,
+                        duration_seconds=duration,
+                    )
+
+                    return Response(
+                        content=receipt,
+                        status_code=201,
+                        media_type="application/cose",
+                        headers={"Location": location},
+                    )
+
+                except Exception as e:
+                    span.record_exception(e)
+                    logger.exception(
+                        "registration_failed",
+                        request_id=request_id,
+                        error=str(e),
+                    )
+                    return self._error_response(
+                        "Registration Failed", f"Failed to register statement: {str(e)}", 400
+                    )
+
+        @self.app.get("/entries/{entry_id}")
+        async def get_registration_status(entry_id: str, request: Request):
+            """
+            Query registration status and retrieve receipt.
+
+            SCRAPI Section 2.1.3: Query Registration Status
+            SCRAPI Section 2.1.4: Resolve Receipt
+            """
+            request_id = getattr(request.state, "request_id", None)
+
+            with tracer.start_as_current_span("get_registration_status") as span:
+                span.set_attribute("entry.id", entry_id)
+
+                try:
+                    # Convert entry_id (hex) to bytes
+                    statement_hash = bytes.fromhex(entry_id)
+                except ValueError:
+                    logger.warning(
+                        "invalid_entry_id",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                    )
+                    return self._error_response(
+                        "Invalid Entry ID", "Entry ID must be hex-encoded hash", 400
+                    )
+
+                # Retrieve entry
+                entry = await self.storage.get_entry_by_hash(statement_hash)
+                if not entry:
+                    logger.warning(
+                        "entry_not_found",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                    )
+                    return self._error_response(
+                        "Not Found",
+                        f"Receipt with entry ID {entry_id} not known to this service",
+                        404,
+                    )
+
+                # Generate fresh receipt
                 tree_size = await self.storage.get_tree_size()
+                leaf_index = entry["leaf_index"]
+                span.set_attribute("entry.leaf_index", leaf_index)
+                span.set_attribute("merkle.tree_size", tree_size)
 
-                # Generate inclusion proof
+                # Get inclusion proof
                 inclusion_proof = await self.merkle_builder.get_inclusion_proof(
                     leaf_index, tree_size
                 )
+                span.set_attribute("merkle.proof_length", len(inclusion_proof))
 
                 # Generate receipt
                 receipt = self.receipt_generator.create_receipt(
@@ -103,102 +240,71 @@ class TransparencyServiceAPI:
                     leaf_index=leaf_index,
                     tree_size=tree_size,
                     inclusion_proof=inclusion_proof,
-                    issuer=metadata.get("issuer"),
-                    subject=metadata.get("subject"),
+                    issuer=entry.get("issuer"),
+                    subject=entry.get("subject"),
                 )
 
-                # Return receipt with location
-                entry_id = statement_hash.hex()
                 location = f"{self.service_url}/entries/{entry_id}"
+
+                logger.info(
+                    "receipt_retrieved",
+                    request_id=request_id,
+                    entry_id=entry_id,
+                    leaf_index=leaf_index,
+                    tree_size=tree_size,
+                )
 
                 return Response(
                     content=receipt,
-                    status_code=201,
+                    status_code=200,
                     media_type="application/cose",
                     headers={"Location": location},
                 )
 
-            except Exception as e:
-                return self._error_response(
-                    "Registration Failed", f"Failed to register statement: {str(e)}", 400
-                )
-
-        @self.app.get("/entries/{entry_id}")
-        async def get_registration_status(entry_id: str):
-            """
-            Query registration status and retrieve receipt.
-
-            SCRAPI Section 2.1.3: Query Registration Status
-            SCRAPI Section 2.1.4: Resolve Receipt
-            """
-            try:
-                # Convert entry_id (hex) to bytes
-                statement_hash = bytes.fromhex(entry_id)
-            except ValueError:
-                return self._error_response(
-                    "Invalid Entry ID", "Entry ID must be hex-encoded hash", 400
-                )
-
-            # Retrieve entry
-            entry = await self.storage.get_entry_by_hash(statement_hash)
-            if not entry:
-                return self._error_response(
-                    "Not Found",
-                    f"Receipt with entry ID {entry_id} not known to this service",
-                    404,
-                )
-
-            # Generate fresh receipt
-            tree_size = await self.storage.get_tree_size()
-            leaf_index = entry["leaf_index"]
-
-            # Get inclusion proof
-            inclusion_proof = await self.merkle_builder.get_inclusion_proof(
-                leaf_index, tree_size
-            )
-
-            # Generate receipt
-            receipt = self.receipt_generator.create_receipt(
-                statement_hash=statement_hash,
-                leaf_index=leaf_index,
-                tree_size=tree_size,
-                inclusion_proof=inclusion_proof,
-                issuer=entry.get("issuer"),
-                subject=entry.get("subject"),
-            )
-
-            location = f"{self.service_url}/entries/{entry_id}"
-
-            return Response(
-                content=receipt,
-                status_code=200,
-                media_type="application/cose",
-                headers={"Location": location},
-            )
-
         @self.app.get("/signed-statements/{entry_id}")
-        async def get_signed_statement(entry_id: str):
+        async def get_signed_statement(entry_id: str, request: Request):
             """
             Retrieve original Signed Statement.
 
             SCRAPI Section 2.2.2: Resolve Signed Statement (Optional)
             """
-            try:
-                statement_hash = bytes.fromhex(entry_id)
-            except ValueError:
-                return self._error_response(
-                    "Invalid Entry ID", "Entry ID must be hex-encoded hash", 400
+            request_id = getattr(request.state, "request_id", None)
+
+            with tracer.start_as_current_span("get_signed_statement") as span:
+                span.set_attribute("entry.id", entry_id)
+
+                try:
+                    statement_hash = bytes.fromhex(entry_id)
+                except ValueError:
+                    logger.warning(
+                        "invalid_entry_id",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                    )
+                    return self._error_response(
+                        "Invalid Entry ID", "Entry ID must be hex-encoded hash", 400
+                    )
+
+                entry = await self.storage.get_entry_by_hash(statement_hash)
+                if not entry:
+                    logger.warning(
+                        "statement_not_found",
+                        request_id=request_id,
+                        entry_id=entry_id,
+                    )
+                    return self._error_response(
+                        "Not Found", f"No Signed Statement found with ID {entry_id}", 404
+                    )
+
+                logger.info(
+                    "statement_retrieved",
+                    request_id=request_id,
+                    entry_id=entry_id,
                 )
 
-            entry = await self.storage.get_entry_by_hash(statement_hash)
-            if not entry:
-                return self._error_response(
-                    "Not Found", f"No Signed Statement found with ID {entry_id}", 404
+                return Response(
+                    content=entry["cose_sign1"], status_code=200, media_type="application/cose"
                 )
-
-            return Response(
-                content=entry["cose_sign1"], status_code=200, media_type="application/cose"
-            )
 
     def _error_response(self, title: str, detail: str, status_code: int):
         """Create RFC 9290 compliant error response."""

@@ -1,4 +1,5 @@
 import cbor2
+import time
 from pycose.messages import Sign1Message
 from pycose.headers import Algorithm, KID
 from pycose.algorithms import Es256
@@ -6,6 +7,14 @@ from pycose.keys.ec2 import EC2Key
 from pycose.keys.curves import P256
 from typing import Optional, List, Dict, Any
 import hashlib
+from opentelemetry import trace
+
+from ..observability.logging import get_logger
+from ..observability.metrics import get_metrics
+
+logger = get_logger(__name__)
+metrics = get_metrics()
+tracer = trace.get_tracer(__name__)
 
 
 class ReceiptGenerator:
@@ -60,50 +69,87 @@ class ReceiptGenerator:
         Returns:
             COSE_Sign1 receipt bytes
         """
-        # Build protected header
-        protected_header = {
-            Algorithm: Es256,  # ES256
-            KID: self.signing_key.kid if self.signing_key.kid else b"ts-key",
-        }
+        start_time = time.time()
+        entry_id = statement_hash.hex()
 
-        # Add verifiable data structure info
-        protected_header[self.VDS_LABEL] = 1  # RFC 9162 SHA-256
+        with tracer.start_as_current_span("receipt.create") as span:
+            span.set_attribute("receipt.entry_id", entry_id)
+            span.set_attribute("receipt.leaf_index", leaf_index)
+            span.set_attribute("receipt.tree_size", tree_size)
+            span.set_attribute("receipt.proof_length", len(inclusion_proof))
+            if issuer:
+                span.set_attribute("receipt.issuer", issuer)
+            if subject:
+                span.set_attribute("receipt.subject", subject)
 
-        # Add claims
-        claims = {
-            1: self.service_id,  # issuer (iss)
-        }
-        if issuer:
-            claims[1] = issuer
-        if subject:
-            claims[2] = subject  # subject (sub)
+            try:
+                # Build protected header
+                protected_header = {
+                    Algorithm: Es256,  # ES256
+                    KID: self.signing_key.kid if self.signing_key.kid else b"ts-key",
+                }
 
-        protected_header[self.CLAIMS_LABEL] = claims
+                # Add verifiable data structure info
+                protected_header[self.VDS_LABEL] = 1  # RFC 9162 SHA-256
 
-        # Build unprotected header with proofs
-        unprotected_header = {
-            self.PROOFS_LABEL: {
-                self.INCLUSION_PROOF_LABEL: [
-                    cbor2.dumps([tree_size, leaf_index, inclusion_proof])
-                ]
-            }
-        }
+                # Add claims
+                claims = {
+                    1: self.service_id,  # issuer (iss)
+                }
+                if issuer:
+                    claims[1] = issuer
+                if subject:
+                    claims[2] = subject  # subject (sub)
 
-        # Create COSE Sign1 with detached payload (null)
-        msg = Sign1Message(
-            phdr=protected_header,
-            uhdr=unprotected_header,
-            payload=None,  # Detached payload per SCITT spec
-        )
+                protected_header[self.CLAIMS_LABEL] = claims
 
-        # Sign the message
-        msg.key = self.signing_key
+                # Build unprotected header with proofs
+                unprotected_header = {
+                    self.PROOFS_LABEL: {
+                        self.INCLUSION_PROOF_LABEL: [
+                            cbor2.dumps([tree_size, leaf_index, inclusion_proof])
+                        ]
+                    }
+                }
 
-        # Encode to COSE format with detached payload for signing
-        # The statement hash is the detached content that gets signed
-        cose_bytes = msg.encode(detached_payload=statement_hash)
+                # Create COSE Sign1 with detached payload (null)
+                msg = Sign1Message(
+                    phdr=protected_header,
+                    uhdr=unprotected_header,
+                    payload=None,  # Detached payload per SCITT spec
+                )
 
-        return cose_bytes
+                # Sign the message
+                msg.key = self.signing_key
+
+                # Encode to COSE format with detached payload for signing
+                # The statement hash is the detached content that gets signed
+                cose_bytes = msg.encode(detached_payload=statement_hash)
+
+                duration = time.time() - start_time
+                metrics.receipt_generation_duration.record(duration)
+                metrics.receipt_generation_count.add(1)
+
+                logger.debug(
+                    "receipt_created",
+                    entry_id=entry_id,
+                    leaf_index=leaf_index,
+                    tree_size=tree_size,
+                    duration_seconds=duration,
+                )
+
+                return cose_bytes
+
+            except Exception as e:
+                duration = time.time() - start_time
+                metrics.receipt_error_count.add(1)
+                span.record_exception(e)
+                logger.exception(
+                    "receipt_creation_failed",
+                    entry_id=entry_id,
+                    error=str(e),
+                )
+                raise
 
     @staticmethod
     def parse_receipt(receipt_bytes: bytes) -> Dict[str, Any]:

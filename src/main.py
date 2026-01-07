@@ -6,10 +6,17 @@ from src.storage.sqlite_store import SQLiteStore
 from src.core.receipts import ReceiptGenerator
 from src.api.endpoints import TransparencyServiceAPI
 from src.config import settings
+from src.observability import setup_logging, setup_opentelemetry
+from src.observability.middleware import ObservabilityMiddleware
+from src.observability.prometheus import setup_prometheus_exporter, get_metrics_endpoint
 
 
 async def create_app():
     """Create and initialize the transparency service application."""
+    # Initialize observability
+    setup_logging()
+    setup_opentelemetry()
+
     # Initialize storage
     db_path = os.environ.get("DB_PATH", settings.db_path)
     storage = SQLiteStore(db_path)
@@ -26,6 +33,15 @@ async def create_app():
         receipt_generator=receipt_gen,
         service_url=settings.service_url,
     )
+
+    # Add observability middleware
+    service.app.add_middleware(ObservabilityMiddleware)
+
+    # Add Prometheus metrics endpoint if enabled
+    exporters = [e.strip() for e in settings.otel_exporter.split(",")]
+    if "prometheus" in exporters:
+        setup_prometheus_exporter()
+        service.app.get("/metrics")(get_metrics_endpoint())
 
     return service.app
 
