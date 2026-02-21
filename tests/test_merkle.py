@@ -186,6 +186,9 @@ def test_invalid_tree_size():
         MerkleTree.generate_inclusion_proof(0, 5, leaves)
 
 
+# --- New MerkleTreeBuilder tests (O(log n) frontier-based) ---
+
+
 @pytest.mark.asyncio
 async def test_merkle_tree_builder_add_leaf(storage_and_builder):
     """Test adding leaves to builder."""
@@ -228,3 +231,153 @@ async def test_merkle_tree_builder_inclusion_proof(storage_and_builder):
 
     is_valid = MerkleTree.verify_inclusion_proof(leaf_hash, 1, proof, 4, root)
     assert is_valid
+
+
+@pytest.mark.asyncio
+async def test_builder_cross_validation_roots():
+    """Verify new builder produces identical roots to MerkleTree.calculate_root() for sizes 1-20."""
+    builder = MerkleTreeBuilder()
+
+    for n in range(1, 21):
+        leaf = f"leaf{n - 1}".encode()
+        await builder.add_leaf(leaf)
+
+        leaves_so_far = [f"leaf{i}".encode() for i in range(n)]
+        expected_root = MerkleTree.calculate_root(leaves_so_far)
+        builder_root = await builder.get_root()
+
+        assert builder_root == expected_root, (
+            f"Root mismatch at tree size {n}: "
+            f"builder={builder_root.hex() if builder_root else None}, "
+            f"expected={expected_root.hex() if expected_root else None}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_builder_cross_validation_proofs():
+    """Verify new builder proofs pass MerkleTree.verify_inclusion_proof() for all leaves."""
+    builder = MerkleTreeBuilder()
+    all_leaves = [f"leaf{i}".encode() for i in range(15)]
+
+    for leaf in all_leaves:
+        await builder.add_leaf(leaf)
+
+    tree_size = builder._tree_size
+    root = await builder.get_root()
+    expected_root = MerkleTree.calculate_root(all_leaves)
+    assert root == expected_root
+
+    for i in range(tree_size):
+        leaf_hash = MerkleTree.hash_leaf(all_leaves[i])
+        proof = await builder.get_inclusion_proof(i, tree_size)
+
+        is_valid = MerkleTree.verify_inclusion_proof(leaf_hash, i, proof, tree_size, root)
+        assert is_valid, f"Proof verification failed for leaf {i} (tree_size={tree_size})"
+
+
+@pytest.mark.asyncio
+async def test_builder_cross_validation_power_of_2():
+    """Test builder with power-of-2 tree sizes (1, 2, 4, 8, 16)."""
+    for size in [1, 2, 4, 8, 16]:
+        builder = MerkleTreeBuilder()
+        leaves = [f"leaf{i}".encode() for i in range(size)]
+
+        for leaf in leaves:
+            await builder.add_leaf(leaf)
+
+        root = await builder.get_root()
+        expected = MerkleTree.calculate_root(leaves)
+        assert root == expected, f"Root mismatch for power-of-2 tree size {size}"
+
+        # Verify all proofs
+        for i in range(size):
+            leaf_hash = MerkleTree.hash_leaf(leaves[i])
+            proof = await builder.get_inclusion_proof(i, size)
+            assert MerkleTree.verify_inclusion_proof(leaf_hash, i, proof, size, root), \
+                f"Proof failed for leaf {i} in tree of size {size}"
+
+
+@pytest.mark.asyncio
+async def test_builder_cross_validation_non_power_of_2():
+    """Test builder with non-power-of-2 tree sizes (3, 5, 6, 7, 9, 10, 13, 17)."""
+    for size in [3, 5, 6, 7, 9, 10, 13, 17]:
+        builder = MerkleTreeBuilder()
+        leaves = [f"leaf{i}".encode() for i in range(size)]
+
+        for leaf in leaves:
+            await builder.add_leaf(leaf)
+
+        root = await builder.get_root()
+        expected = MerkleTree.calculate_root(leaves)
+        assert root == expected, f"Root mismatch for tree size {size}"
+
+        # Verify all proofs
+        for i in range(size):
+            leaf_hash = MerkleTree.hash_leaf(leaves[i])
+            proof = await builder.get_inclusion_proof(i, size)
+            assert MerkleTree.verify_inclusion_proof(leaf_hash, i, proof, size, root), \
+                f"Proof failed for leaf {i} in tree of size {size}"
+
+
+@pytest.mark.asyncio
+async def test_builder_warm_up(storage_and_builder):
+    """Test warm-up: add leaves, persist, create new builder from same storage, verify identical state."""
+    storage, builder = storage_and_builder
+
+    leaves = [f"leaf{i}".encode() for i in range(10)]
+    for leaf in leaves:
+        await builder.add_leaf(leaf)
+
+    # Persist all nodes
+    await builder.persist_all_nodes()
+
+    original_root = await builder.get_root()
+    original_size = builder._tree_size
+
+    # Create new builder and warm up
+    new_builder = MerkleTreeBuilder(storage)
+    await new_builder.warm_up()
+
+    assert new_builder._tree_size == original_size
+    assert await new_builder.get_root() == original_root
+
+    # Verify proofs still work
+    for i in range(original_size):
+        leaf_hash = MerkleTree.hash_leaf(leaves[i])
+        proof = await new_builder.get_inclusion_proof(i, original_size)
+        assert MerkleTree.verify_inclusion_proof(leaf_hash, i, proof, original_size, original_root), \
+            f"Post-warm-up proof failed for leaf {i}"
+
+
+@pytest.mark.asyncio
+async def test_builder_warm_up_and_continue(storage_and_builder):
+    """Test that we can add more leaves after warm-up and everything stays consistent."""
+    storage, builder = storage_and_builder
+
+    # Add first batch
+    leaves = [f"leaf{i}".encode() for i in range(8)]
+    for leaf in leaves:
+        await builder.add_leaf(leaf)
+    await builder.persist_all_nodes()
+
+    # Warm up new builder
+    new_builder = MerkleTreeBuilder(storage)
+    await new_builder.warm_up()
+
+    # Add more leaves
+    more_leaves = [f"leaf{i}".encode() for i in range(8, 12)]
+    for leaf in more_leaves:
+        await new_builder.add_leaf(leaf)
+
+    all_leaves = leaves + more_leaves
+    root = await new_builder.get_root()
+    expected_root = MerkleTree.calculate_root(all_leaves)
+    assert root == expected_root
+
+    # Verify all proofs
+    tree_size = new_builder._tree_size
+    for i in range(tree_size):
+        leaf_hash = MerkleTree.hash_leaf(all_leaves[i])
+        proof = await new_builder.get_inclusion_proof(i, tree_size)
+        assert MerkleTree.verify_inclusion_proof(leaf_hash, i, proof, tree_size, root), \
+            f"Proof failed for leaf {i} after warm-up + continue"

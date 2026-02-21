@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional, Tuple
 
 
 class StorageBackend(ABC):
@@ -53,15 +53,44 @@ class StorageBackend(ABC):
     async def store_merkle_node(
         self, tree_size: int, position: int, node_hash: bytes
     ) -> None:
-        """Store a Merkle tree node."""
+        """Store a Merkle tree node (legacy interface)."""
         pass
 
     @abstractmethod
     async def get_merkle_node(self, tree_size: int, position: int) -> Optional[bytes]:
-        """Retrieve a Merkle tree node."""
+        """Retrieve a Merkle tree node (legacy interface)."""
         pass
 
     @abstractmethod
     async def close(self) -> None:
         """Close the storage backend."""
         pass
+
+    # --- New methods for O(log n) Merkle tree ---
+
+    async def store_tree_node(self, level: int, index: int, node_hash: bytes) -> None:
+        """Store an internal Merkle tree node by (level, index)."""
+        raise NotImplementedError
+
+    async def get_tree_node(self, level: int, index: int) -> Optional[bytes]:
+        """Retrieve an internal Merkle tree node by (level, index)."""
+        raise NotImplementedError
+
+    async def get_all_tree_nodes(self) -> List[Tuple[int, int, bytes]]:
+        """Retrieve all internal Merkle tree nodes as (level, index, hash) tuples."""
+        raise NotImplementedError
+
+    async def store_frontier(self, frontier: List[bytes], tree_size: int) -> None:
+        """Store the current Merkle frontier and tree size."""
+        raise NotImplementedError
+
+    async def get_frontier(self) -> Tuple[List[bytes], int]:
+        """Retrieve the stored Merkle frontier and tree size. Returns ([], 0) if none."""
+        raise NotImplementedError
+
+    async def store_tree_nodes_batch(
+        self, nodes: List[Tuple[int, int, bytes]]
+    ) -> None:
+        """Store multiple tree nodes in a single transaction. Default: call store_tree_node for each."""
+        for level, index, node_hash in nodes:
+            await self.store_tree_node(level, index, node_hash)

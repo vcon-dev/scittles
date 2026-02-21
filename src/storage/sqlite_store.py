@@ -1,7 +1,7 @@
 import aiosqlite
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 from opentelemetry import trace
 
 from .base import StorageBackend
@@ -24,6 +24,9 @@ class SQLiteStore(StorageBackend):
         """Initialize the database with schema."""
         self.conn = await aiosqlite.connect(self.db_path)
         self.conn.row_factory = aiosqlite.Row
+
+        # Enable WAL mode for better concurrent read/write performance
+        await self.conn.execute("PRAGMA journal_mode=WAL")
 
         # Load and execute schema
         schema_path = Path(__file__).parent / "schema.sql"
@@ -198,7 +201,7 @@ class SQLiteStore(StorageBackend):
     async def store_merkle_node(
         self, tree_size: int, position: int, node_hash: bytes
     ) -> None:
-        """Store a Merkle tree node."""
+        """Store a Merkle tree node (legacy interface)."""
         start_time = time.time()
 
         with tracer.start_as_current_span("db.store_merkle_node") as span:
@@ -239,7 +242,7 @@ class SQLiteStore(StorageBackend):
                 raise
 
     async def get_merkle_node(self, tree_size: int, position: int) -> Optional[bytes]:
-        """Retrieve a Merkle tree node."""
+        """Retrieve a Merkle tree node (legacy interface)."""
         start_time = time.time()
 
         with tracer.start_as_current_span("db.get_merkle_node") as span:
@@ -279,6 +282,95 @@ class SQLiteStore(StorageBackend):
                     error=str(e),
                 )
                 raise
+
+    # --- New methods for O(log n) Merkle tree ---
+
+    async def store_tree_node(self, level: int, index: int, node_hash: bytes) -> None:
+        """Store an internal Merkle tree node by (level, index)."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO merkle_tree_nodes (level, position, node_hash) VALUES (?, ?, ?)",
+            (level, index, node_hash),
+        )
+        await self.conn.commit()
+
+    async def get_tree_node(self, level: int, index: int) -> Optional[bytes]:
+        """Retrieve an internal Merkle tree node by (level, index)."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        async with self.conn.execute(
+            "SELECT node_hash FROM merkle_tree_nodes WHERE level = ? AND position = ?",
+            (level, index),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def get_all_tree_nodes(self) -> List[Tuple[int, int, bytes]]:
+        """Retrieve all internal Merkle tree nodes."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        async with self.conn.execute(
+            "SELECT level, position, node_hash FROM merkle_tree_nodes"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [(row[0], row[1], row[2]) for row in rows]
+
+    async def store_frontier(self, frontier: List[bytes], tree_size: int) -> None:
+        """Store the current Merkle frontier and tree size."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        # Serialize frontier as concatenated 32-byte hashes
+        frontier_blob = b"".join(frontier)
+
+        await self.conn.execute(
+            """
+            INSERT OR REPLACE INTO merkle_frontier (id, tree_size, frontier)
+            VALUES (1, ?, ?)
+            """,
+            (tree_size, frontier_blob),
+        )
+        await self.conn.commit()
+
+    async def get_frontier(self) -> Tuple[List[bytes], int]:
+        """Retrieve the stored Merkle frontier and tree size."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        async with self.conn.execute(
+            "SELECT tree_size, frontier FROM merkle_frontier WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return [], 0
+
+            tree_size = row[0]
+            frontier_blob = row[1]
+
+            # Deserialize: split blob into 32-byte chunks
+            frontier = []
+            if frontier_blob:
+                for i in range(0, len(frontier_blob), 32):
+                    frontier.append(frontier_blob[i : i + 32])
+
+            return frontier, tree_size
+
+    async def store_tree_nodes_batch(
+        self, nodes: List[Tuple[int, int, bytes]]
+    ) -> None:
+        """Store multiple tree nodes in a single transaction."""
+        if not self.conn:
+            raise RuntimeError("Storage not initialized")
+
+        await self.conn.executemany(
+            "INSERT OR REPLACE INTO merkle_tree_nodes (level, position, node_hash) VALUES (?, ?, ?)",
+            nodes,
+        )
+        await self.conn.commit()
 
     async def close(self) -> None:
         """Close the database connection."""

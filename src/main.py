@@ -17,10 +17,23 @@ async def create_app():
     setup_logging()
     setup_opentelemetry()
 
-    # Initialize storage
-    db_path = os.environ.get("DB_PATH", settings.db_path)
-    storage = SQLiteStore(db_path)
-    await storage.initialize()
+    # Initialize storage backend
+    # For postgres, defer pool creation to startup event (asyncpg pools are
+    # bound to the event loop they're created in, and asyncio.run() uses a
+    # different loop than uvicorn).
+    if settings.storage_backend == "postgres":
+        from src.storage.postgres_store import PostgresStore
+
+        storage = PostgresStore(
+            dsn=settings.postgres_url,
+            pool_min=settings.postgres_pool_min,
+            pool_max=settings.postgres_pool_max,
+        )
+        # Don't initialize yet — deferred to startup event
+    else:
+        db_path = os.environ.get("DB_PATH", settings.db_path)
+        storage = SQLiteStore(db_path)
+        await storage.initialize()
 
     # Generate or load signing key
     # In production, load from secure key storage
@@ -33,6 +46,19 @@ async def create_app():
         receipt_generator=receipt_gen,
         service_url=settings.service_url,
     )
+
+    # Register startup/shutdown events
+    @service.app.on_event("startup")
+    async def on_startup():
+        # For postgres, create pool in uvicorn's event loop
+        if settings.storage_backend == "postgres":
+            await storage.initialize()
+        # Warm up Merkle tree from persisted state
+        await service.merkle_builder.warm_up()
+
+    @service.app.on_event("shutdown")
+    async def on_shutdown():
+        await storage.close()
 
     # Add observability middleware
     service.app.add_middleware(ObservabilityMiddleware)

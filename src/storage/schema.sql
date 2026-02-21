@@ -14,12 +14,27 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS idx_statement_hash ON entries(statement_hash);
 CREATE INDEX IF NOT EXISTS idx_leaf_index ON entries(leaf_index);
 
--- Merkle tree nodes for inclusion proof generation
+-- Merkle tree nodes for inclusion proof generation (legacy)
 CREATE TABLE IF NOT EXISTS merkle_nodes (
     tree_size INTEGER NOT NULL,
     node_position INTEGER NOT NULL,
     node_hash BLOB NOT NULL,
     PRIMARY KEY (tree_size, node_position)
+);
+
+-- Internal Merkle tree nodes keyed by (level, position) for O(log n) operations
+CREATE TABLE IF NOT EXISTS merkle_tree_nodes (
+    level INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    node_hash BLOB NOT NULL,
+    PRIMARY KEY (level, position)
+);
+
+-- Merkle frontier: compact representation of the tree state
+CREATE TABLE IF NOT EXISTS merkle_frontier (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    tree_size INTEGER NOT NULL DEFAULT 0,
+    frontier BLOB NOT NULL DEFAULT X''
 );
 
 -- Service configuration and state

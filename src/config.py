@@ -7,6 +7,10 @@ class Settings(BaseSettings):
 
     # Database
     db_path: str = "transparency.db"
+    storage_backend: str = "sqlite"  # "sqlite" or "postgres"
+    postgres_url: Optional[str] = None
+    postgres_pool_min: int = 2
+    postgres_pool_max: int = 10
 
     # Service
     service_url: str = "https://transparency.example"

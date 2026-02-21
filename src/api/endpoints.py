@@ -1,9 +1,10 @@
+import asyncio
 from fastapi import FastAPI, Response, Request, status
 import cbor2
 import time
 from opentelemetry import trace
 
-from ..storage.sqlite_store import SQLiteStore
+from ..storage.base import StorageBackend
 from ..core.merkle import MerkleTreeBuilder
 from ..core.receipts import ReceiptGenerator, StatementValidator
 from .models import TransparencyConfiguration
@@ -20,7 +21,7 @@ class TransparencyServiceAPI:
 
     def __init__(
         self,
-        storage: SQLiteStore,
+        storage: StorageBackend,
         receipt_generator: ReceiptGenerator,
         service_url: str = "https://transparency.example",
     ):
@@ -28,6 +29,7 @@ class TransparencyServiceAPI:
         self.receipt_generator = receipt_generator
         self.service_url = service_url
         self.merkle_builder = MerkleTreeBuilder(storage)
+        self._registration_lock = asyncio.Lock()
         self.app = FastAPI(title="SCITT Transparency Service")
 
         self._setup_routes()
@@ -102,51 +104,53 @@ class TransparencyServiceAPI:
                         subject=metadata.get("subject"),
                     )
 
-                    # Check if already registered
-                    existing = await self.storage.get_entry_by_hash(statement_hash)
-                    if existing:
-                        logger.warning(
-                            "registration_failed",
-                            request_id=request_id,
-                            entry_id=entry_id,
-                            reason="already_registered",
+                    # Serialize the critical section: append + tree update + proof + receipt
+                    async with self._registration_lock:
+                        # Check if already registered
+                        existing = await self.storage.get_entry_by_hash(statement_hash)
+                        if existing:
+                            logger.warning(
+                                "registration_failed",
+                                request_id=request_id,
+                                entry_id=entry_id,
+                                reason="already_registered",
+                            )
+                            return self._error_response(
+                                "Already Registered",
+                                "Statement with this hash already registered",
+                                400,
+                            )
+
+                        # Append to log
+                        leaf_index = await self.storage.append_entry(
+                            statement_hash=statement_hash,
+                            cose_sign1=cose_sign1,
+                            issuer=metadata.get("issuer"),
+                            subject=metadata.get("subject"),
+                            content_type=metadata.get("content_type"),
                         )
-                        return self._error_response(
-                            "Already Registered",
-                            "Statement with this hash already registered",
-                            400,
+                        span.set_attribute("entry.leaf_index", leaf_index)
+
+                        # Add to Merkle tree — O(log n)
+                        await self.merkle_builder.add_leaf(statement_hash)
+                        tree_size = self.merkle_builder._tree_size
+                        span.set_attribute("merkle.tree_size", tree_size)
+
+                        # Generate inclusion proof — O(log n), no hashing
+                        inclusion_proof = await self.merkle_builder.get_inclusion_proof(
+                            leaf_index, tree_size
                         )
+                        span.set_attribute("merkle.proof_length", len(inclusion_proof))
 
-                    # Append to log
-                    leaf_index = await self.storage.append_entry(
-                        statement_hash=statement_hash,
-                        cose_sign1=cose_sign1,
-                        issuer=metadata.get("issuer"),
-                        subject=metadata.get("subject"),
-                        content_type=metadata.get("content_type"),
-                    )
-                    span.set_attribute("entry.leaf_index", leaf_index)
-
-                    # Add to Merkle tree
-                    await self.merkle_builder.add_leaf(statement_hash)
-                    tree_size = await self.storage.get_tree_size()
-                    span.set_attribute("merkle.tree_size", tree_size)
-
-                    # Generate inclusion proof
-                    inclusion_proof = await self.merkle_builder.get_inclusion_proof(
-                        leaf_index, tree_size
-                    )
-                    span.set_attribute("merkle.proof_length", len(inclusion_proof))
-
-                    # Generate receipt
-                    receipt = self.receipt_generator.create_receipt(
-                        statement_hash=statement_hash,
-                        leaf_index=leaf_index,
-                        tree_size=tree_size,
-                        inclusion_proof=inclusion_proof,
-                        issuer=metadata.get("issuer"),
-                        subject=metadata.get("subject"),
-                    )
+                        # Generate receipt
+                        receipt = self.receipt_generator.create_receipt(
+                            statement_hash=statement_hash,
+                            leaf_index=leaf_index,
+                            tree_size=tree_size,
+                            inclusion_proof=inclusion_proof,
+                            issuer=metadata.get("issuer"),
+                            subject=metadata.get("subject"),
+                        )
 
                     # Return receipt with location
                     location = f"{self.service_url}/entries/{entry_id}"
@@ -222,13 +226,12 @@ class TransparencyServiceAPI:
                         404,
                     )
 
-                # Generate fresh receipt
-                tree_size = await self.storage.get_tree_size()
+                tree_size = self.merkle_builder._tree_size
                 leaf_index = entry["leaf_index"]
                 span.set_attribute("entry.leaf_index", leaf_index)
                 span.set_attribute("merkle.tree_size", tree_size)
 
-                # Get inclusion proof
+                # Get inclusion proof — O(log n)
                 inclusion_proof = await self.merkle_builder.get_inclusion_proof(
                     leaf_index, tree_size
                 )
