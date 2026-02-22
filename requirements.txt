@@ -14,6 +14,7 @@ opentelemetry-api>=1.22.0
 opentelemetry-sdk>=1.22.0
 opentelemetry-instrumentation-fastapi>=0.42b0
 opentelemetry-instrumentation-sqlite3>=0.42b0
+opentelemetry-instrumentation-asyncpg>=0.42b0
 opentelemetry-exporter-otlp-proto-grpc>=1.22.0
 opentelemetry-exporter-prometheus>=0.60b0
 structlog>=24.1.0

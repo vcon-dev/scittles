@@ -94,6 +94,13 @@ def setup_opentelemetry() -> None:
     # Instrument SQLite
     SQLite3Instrumentor().instrument()
 
+    # Instrument asyncpg (PostgreSQL async driver)
+    try:
+        from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
+        AsyncPGInstrumentor().instrument()
+    except ImportError:
+        pass
+
 
 def get_tracer(name: str):
     """Get a tracer instance."""
