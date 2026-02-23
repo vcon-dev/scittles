@@ -217,12 +217,26 @@ Creates COSE Sign1 receipts containing:
 - Inclusion proofs in unprotected header
 - Claims (issuer, subject) in protected header
 
-#### SQLite Storage
+#### Storage Backends
 
-Append-only log with:
-- Entries table (statement hash, COSE message, metadata)
-- Merkle node cache for efficient proof generation
-- Service state persistence
+**SQLite** (default): Append-only log with entries table, Merkle node cache, and service state persistence.
+
+**PostgreSQL**: Production backend using asyncpg for async database access. Configure via:
+
+```bash
+SCITT_STORAGE_BACKEND=postgres
+SCITT_POSTGRES_URL=postgresql://user:pass@host:5432/dbname
+```
+
+#### Database Instrumentation
+
+When OpenTelemetry is enabled, the asyncpg driver is auto-instrumented via `opentelemetry-instrumentation-asyncpg`. All PostgreSQL queries appear as `db.query` spans in traces, providing visibility into query latency and connection pool behavior. Install:
+
+```bash
+pip install opentelemetry-instrumentation-asyncpg
+```
+
+The instrumentor is activated automatically during OTEL initialization (`src/observability/otel.py`).
 
 ## Usage Examples
 
