@@ -259,10 +259,27 @@ class MerkleTreeBuilder:
 
     async def _rebuild_from_entries(self, tree_size: int) -> None:
         """Rebuild the Merkle tree incrementally from stored entries."""
-        for i in range(tree_size):
-            entry = await self.storage.get_entry_by_index(i)
-            if entry:
-                self._add_leaf_internal(entry["statement_hash"])
+        batch_size = 10000
+
+        for batch_start in range(0, tree_size, batch_size):
+            batch_end = min(batch_start + batch_size, tree_size)
+
+            if hasattr(self.storage, "get_entries_batch"):
+                entries = await self.storage.get_entries_batch(batch_start, batch_end)
+                for entry in entries:
+                    self._add_leaf_internal(entry["statement_hash"])
+            else:
+                for i in range(batch_start, batch_end):
+                    entry = await self.storage.get_entry_by_index(i)
+                    if entry:
+                        self._add_leaf_internal(entry["statement_hash"])
+
+            if batch_end % 100000 == 0 or batch_end == tree_size:
+                logger.info(
+                    "merkle_rebuild_progress",
+                    processed=batch_end,
+                    total=tree_size,
+                )
 
         # Persist the rebuilt state
         try:
@@ -276,7 +293,9 @@ class MerkleTreeBuilder:
             nodes=len(self._nodes),
         )
 
-    def _add_leaf_internal(self, leaf_data: bytes) -> int:
+    def _add_leaf_internal(
+        self, leaf_data: bytes
+    ) -> Tuple[int, List[Tuple[int, int, bytes]]]:
         """
         Add a leaf to the tree (in-memory only, no storage I/O).
 
@@ -285,13 +304,16 @@ class MerkleTreeBuilder:
         2. Store it as a level-0 node
         3. Merge with frontier right-to-left where trailing bits of (index+1) are set
 
-        Returns the leaf index.
+        Returns (leaf_index, new_nodes) where new_nodes is a list of
+        (level, position, hash) tuples created by this operation.
         """
         leaf_index = self._tree_size
         leaf_hash = MerkleTree.hash_leaf(leaf_data)
+        new_nodes: List[Tuple[int, int, bytes]] = []
 
         # Store leaf node at level 0
         self._nodes[(0, leaf_index)] = leaf_hash
+        new_nodes.append((0, leaf_index, leaf_hash))
 
         # Merge into frontier
         current = leaf_hash
@@ -308,13 +330,14 @@ class MerkleTreeBuilder:
             parent_idx = sibling_idx // 2
             current = MerkleTree.hash_children(left, current)
             self._nodes[(level, parent_idx)] = current
+            new_nodes.append((level, parent_idx, current))
             idx = parent_idx
             n = n // 2
 
         self._frontier.append(current)
         self._tree_size = leaf_index + 1
 
-        return leaf_index
+        return leaf_index, new_nodes
 
     async def add_leaf(self, leaf_data: bytes) -> int:
         """
@@ -327,13 +350,13 @@ class MerkleTreeBuilder:
 
         with tracer.start_as_current_span("merkle.add_leaf") as span:
             try:
-                leaf_index = self._add_leaf_internal(leaf_data)
+                leaf_index, new_nodes = self._add_leaf_internal(leaf_data)
                 tree_size = self._tree_size
 
                 span.set_attribute("merkle.leaf_index", leaf_index)
                 span.set_attribute("merkle.tree_size", tree_size)
 
-                # Persist frontier
+                # Persist frontier and new nodes
                 if self.storage:
                     try:
                         await self.storage.store_frontier(
@@ -341,6 +364,12 @@ class MerkleTreeBuilder:
                         )
                     except NotImplementedError:
                         pass
+
+                    if new_nodes:
+                        try:
+                            await self.storage.store_tree_nodes_batch(new_nodes)
+                        except NotImplementedError:
+                            pass
 
                 duration = time.time() - start_time
                 metrics.merkle_operation_duration.record(duration, {"operation": "add_leaf"})
@@ -365,14 +394,16 @@ class MerkleTreeBuilder:
                 )
                 raise
 
-    async def persist_all_nodes(self) -> None:
+    async def persist_all_nodes(self, batch_size: int = 50000) -> None:
         """Persist all in-memory nodes to storage (for migration/rebuild)."""
         if not self.storage:
             return
 
         nodes = [(level, idx, h) for (level, idx), h in self._nodes.items()]
         try:
-            await self.storage.store_tree_nodes_batch(nodes)
+            for i in range(0, len(nodes), batch_size):
+                batch = nodes[i : i + batch_size]
+                await self.storage.store_tree_nodes_batch(batch)
             await self.storage.store_frontier(list(self._frontier), self._tree_size)
         except NotImplementedError:
             pass

@@ -249,11 +249,23 @@ class StatementValidator:
             "kid": protected.get(KID),
         }
 
-        # Check for SCITT-specific headers
-        # Type header (16): "application/example+cose"
-        content_type = protected.get(16)
+        # Extract CWT claims (label 13) — contains issuer and subject
+        cwt_claims = protected.get(13)
+        if cwt_claims and isinstance(cwt_claims, dict):
+            if 1 in cwt_claims:  # CWT issuer
+                metadata["issuer"] = cwt_claims[1]
+            if 2 in cwt_claims:  # CWT subject
+                metadata["subject"] = cwt_claims[2]
+
+        # Preimage content type at -6802 (COSE hash envelope spec)
+        content_type = protected.get(-6802)
         if content_type:
             metadata["content_type"] = content_type
+        else:
+            # Fallback: generic COSE content type header (label 16)
+            content_type = protected.get(16)
+            if content_type:
+                metadata["content_type"] = content_type
 
         # Payload hash algorithm (258)
         payload_hash_alg = protected.get(258)

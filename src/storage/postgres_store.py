@@ -35,6 +35,7 @@ class PostgresStore(StorageBackend):
 
     CREATE INDEX IF NOT EXISTS idx_scitt_statement_hash ON scitt.entries(statement_hash);
     CREATE INDEX IF NOT EXISTS idx_scitt_leaf_index ON scitt.entries(leaf_index);
+    CREATE INDEX IF NOT EXISTS idx_scitt_subject ON scitt.entries(subject);
 
     CREATE TABLE IF NOT EXISTS scitt.merkle_tree_nodes (
         level INTEGER NOT NULL,
@@ -199,6 +200,20 @@ class PostgresStore(StorageBackend):
                 "SELECT * FROM scitt.entries WHERE leaf_index = $1", leaf_index
             )
             return dict(row) if row else None
+
+    async def get_entries_batch(
+        self, start_index: int, end_index: int
+    ) -> List[dict]:
+        """Retrieve entries by leaf index range [start_index, end_index)."""
+        if not self.pool:
+            raise RuntimeError("Storage not initialized")
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM scitt.entries WHERE leaf_index >= $1 AND leaf_index < $2 ORDER BY leaf_index",
+                start_index, end_index,
+            )
+            return [dict(row) for row in rows]
 
     async def get_tree_size(self) -> int:
         """Get current size of the Merkle tree."""
