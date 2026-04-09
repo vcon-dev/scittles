@@ -1,11 +1,9 @@
-import asyncio
 from fastapi import FastAPI, Response, Request, status
 import cbor2
 import time
 from opentelemetry import trace
 
 from ..storage.base import StorageBackend
-from ..core.merkle import MerkleTreeBuilder
 from ..core.receipts import ReceiptGenerator, StatementValidator
 from .models import TransparencyConfiguration
 from ..observability.logging import get_logger
@@ -17,7 +15,7 @@ tracer = trace.get_tracer(__name__)
 
 
 class TransparencyServiceAPI:
-    """SCRAPI-compatible REST API for transparency service."""
+    """SCRAPI-compatible REST API for transparency service using hash chain."""
 
     def __init__(
         self,
@@ -28,8 +26,6 @@ class TransparencyServiceAPI:
         self.storage = storage
         self.receipt_generator = receipt_generator
         self.service_url = service_url
-        self.merkle_builder = MerkleTreeBuilder(storage)
-        self._registration_lock = asyncio.Lock()
         self.app = FastAPI(title="SCITT Transparency Service")
 
         self._setup_routes()
@@ -55,7 +51,6 @@ class TransparencyServiceAPI:
             status_code=status.HTTP_201_CREATED,
             responses={
                 201: {"description": "Registered successfully"},
-                303: {"description": "Registration pending"},
                 400: {"description": "Invalid request"},
             },
         )
@@ -63,13 +58,14 @@ class TransparencyServiceAPI:
             """
             Register a Signed Statement.
 
-            SCRAPI Section 2.1.2: Register Signed Statement
+            Uses a hash chain instead of a Merkle tree. Serialization is handled
+            by PostgreSQL row-level locking on the service_state table, so no
+            application-level lock is needed.
             """
             start_time = time.time()
             request_id = getattr(request.state, "request_id", None)
 
             with tracer.start_as_current_span("register_statement") as span:
-                # Read COSE Sign1 from body
                 cose_sign1 = await request.body()
 
                 if not cose_sign1:
@@ -83,76 +79,41 @@ class TransparencyServiceAPI:
                     )
 
                 try:
-                    # Extract statement hash
                     statement_hash = StatementValidator.extract_statement_hash(cose_sign1)
                     entry_id = statement_hash.hex()
                     span.set_attribute("entry.id", entry_id)
-                    span.set_attribute("statement.hash", entry_id)
 
-                    # Extract metadata
                     metadata = StatementValidator.extract_metadata(cose_sign1)
-                    if metadata.get("issuer"):
-                        span.set_attribute("statement.issuer", metadata.get("issuer"))
-                    if metadata.get("subject"):
-                        span.set_attribute("statement.subject", metadata.get("subject"))
 
-                    logger.info(
-                        "registration_started",
-                        request_id=request_id,
-                        entry_id=entry_id,
+                    # Check duplicate before attempting insert
+                    existing = await self.storage.get_entry_by_hash(statement_hash)
+                    if existing:
+                        return self._error_response(
+                            "Already Registered",
+                            "Statement with this hash already registered",
+                            400,
+                        )
+
+                    # Append to log with hash chain — Postgres serializes via row lock
+                    leaf_index, chain_hash = await self.storage.append_entry(
+                        statement_hash=statement_hash,
+                        cose_sign1=cose_sign1,
+                        issuer=metadata.get("issuer"),
+                        subject=metadata.get("subject"),
+                        content_type=metadata.get("content_type"),
+                    )
+                    span.set_attribute("entry.leaf_index", leaf_index)
+                    span.set_attribute("entry.chain_hash", chain_hash.hex())
+
+                    # Generate receipt with chain_hash instead of Merkle proof
+                    receipt = self.receipt_generator.create_receipt(
+                        statement_hash=statement_hash,
+                        leaf_index=leaf_index,
+                        chain_hash=chain_hash,
                         issuer=metadata.get("issuer"),
                         subject=metadata.get("subject"),
                     )
 
-                    # Serialize the critical section: append + tree update + proof + receipt
-                    async with self._registration_lock:
-                        # Check if already registered
-                        existing = await self.storage.get_entry_by_hash(statement_hash)
-                        if existing:
-                            logger.warning(
-                                "registration_failed",
-                                request_id=request_id,
-                                entry_id=entry_id,
-                                reason="already_registered",
-                            )
-                            return self._error_response(
-                                "Already Registered",
-                                "Statement with this hash already registered",
-                                400,
-                            )
-
-                        # Append to log
-                        leaf_index = await self.storage.append_entry(
-                            statement_hash=statement_hash,
-                            cose_sign1=cose_sign1,
-                            issuer=metadata.get("issuer"),
-                            subject=metadata.get("subject"),
-                            content_type=metadata.get("content_type"),
-                        )
-                        span.set_attribute("entry.leaf_index", leaf_index)
-
-                        # Add to Merkle tree — O(log n)
-                        await self.merkle_builder.add_leaf(statement_hash)
-                        tree_size = self.merkle_builder._tree_size
-                        span.set_attribute("merkle.tree_size", tree_size)
-
-                        # Generate inclusion proof — O(log n), no hashing
-                        inclusion_proof = await self.merkle_builder.get_inclusion_proof(
-                            leaf_index, tree_size
-                        )
-                        span.set_attribute("merkle.proof_length", len(inclusion_proof))
-
-                        # Generate receipt
-                        receipt = self.receipt_generator.create_receipt(
-                            statement_hash=statement_hash,
-                            leaf_index=leaf_index,
-                            tree_size=tree_size,
-                            inclusion_proof=inclusion_proof,
-                            issuer=metadata.get("issuer"),
-                            subject=metadata.get("subject"),
-                        )
-
-                    # Return receipt with location
                     location = f"{self.service_url}/entries/{entry_id}"
 
                     duration = time.time() - start_time
@@ -164,7 +125,7 @@ class TransparencyServiceAPI:
                         request_id=request_id,
                         entry_id=entry_id,
                         leaf_index=leaf_index,
-                        tree_size=tree_size,
+                        chain_hash=chain_hash.hex()[:16],
                         duration_seconds=duration,
                     )
 
@@ -190,9 +151,6 @@ class TransparencyServiceAPI:
         async def get_registration_status(entry_id: str, request: Request):
             """
             Query registration status and retrieve receipt.
-
-            SCRAPI Section 2.1.3: Query Registration Status
-            SCRAPI Section 2.1.4: Resolve Receipt
             """
             request_id = getattr(request.state, "request_id", None)
 
@@ -200,49 +158,27 @@ class TransparencyServiceAPI:
                 span.set_attribute("entry.id", entry_id)
 
                 try:
-                    # Convert entry_id (hex) to bytes
                     statement_hash = bytes.fromhex(entry_id)
                 except ValueError:
-                    logger.warning(
-                        "invalid_entry_id",
-                        request_id=request_id,
-                        entry_id=entry_id,
-                    )
                     return self._error_response(
                         "Invalid Entry ID", "Entry ID must be hex-encoded hash", 400
                     )
 
-                # Retrieve entry
                 entry = await self.storage.get_entry_by_hash(statement_hash)
                 if not entry:
-                    logger.warning(
-                        "entry_not_found",
-                        request_id=request_id,
-                        entry_id=entry_id,
-                    )
                     return self._error_response(
                         "Not Found",
                         f"Receipt with entry ID {entry_id} not known to this service",
                         404,
                     )
 
-                tree_size = self.merkle_builder._tree_size
                 leaf_index = entry["leaf_index"]
-                span.set_attribute("entry.leaf_index", leaf_index)
-                span.set_attribute("merkle.tree_size", tree_size)
+                chain_hash = bytes(entry["chain_hash"]) if entry.get("chain_hash") else b""
 
-                # Get inclusion proof — O(log n)
-                inclusion_proof = await self.merkle_builder.get_inclusion_proof(
-                    leaf_index, tree_size
-                )
-                span.set_attribute("merkle.proof_length", len(inclusion_proof))
-
-                # Generate receipt
                 receipt = self.receipt_generator.create_receipt(
                     statement_hash=statement_hash,
                     leaf_index=leaf_index,
-                    tree_size=tree_size,
-                    inclusion_proof=inclusion_proof,
+                    chain_hash=chain_hash,
                     issuer=entry.get("issuer"),
                     subject=entry.get("subject"),
                 )
@@ -254,7 +190,6 @@ class TransparencyServiceAPI:
                     request_id=request_id,
                     entry_id=entry_id,
                     leaf_index=leaf_index,
-                    tree_size=tree_size,
                 )
 
                 return Response(

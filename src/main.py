@@ -28,6 +28,7 @@ async def create_app():
             dsn=settings.postgres_url,
             pool_min=settings.postgres_pool_min,
             pool_max=settings.postgres_pool_max,
+            redis_url=settings.redis_url,
         )
         # Don't initialize yet — deferred to startup event
     else:
@@ -53,8 +54,6 @@ async def create_app():
         # For postgres, create pool in uvicorn's event loop
         if settings.storage_backend == "postgres":
             await storage.initialize()
-        # Warm up Merkle tree from persisted state
-        await service.merkle_builder.warm_up()
 
     @service.app.on_event("shutdown")
     async def on_shutdown():

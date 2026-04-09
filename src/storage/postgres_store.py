@@ -1,3 +1,4 @@
+import hashlib
 import time
 from typing import List, Optional, Tuple
 from opentelemetry import trace
@@ -66,6 +67,7 @@ class PostgresStore(StorageBackend):
         dsn: str,
         pool_min: int = 2,
         pool_max: int = 10,
+        redis_url: str = "redis://redis:6379",
     ):
         if asyncpg is None:
             raise ImportError("asyncpg is required for PostgreSQL backend: pip install asyncpg")
@@ -74,9 +76,13 @@ class PostgresStore(StorageBackend):
         self.pool_min = pool_min
         self.pool_max = pool_max
         self.pool: Optional[asyncpg.Pool] = None
+        self._redis_url = redis_url
+        self._redis = None
 
     async def initialize(self) -> None:
-        """Initialize connection pool and create schema."""
+        """Initialize connection pool, create schema, and seed Redis chain state."""
+        import redis as redis_lib
+
         self.pool = await asyncpg.create_pool(
             dsn=self.dsn,
             min_size=self.pool_min,
@@ -85,6 +91,28 @@ class PostgresStore(StorageBackend):
 
         async with self.pool.acquire() as conn:
             await conn.execute(self.SCHEMA_SQL)
+
+        # Connect to Redis
+        self._redis = redis_lib.from_url(self._redis_url)
+        self._redis.ping()
+
+        # Seed Redis chain state from Postgres if not already set
+        if self._redis.get("scitt:chain_hash") is None:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT leaf_index, chain_hash FROM scitt.entries ORDER BY leaf_index DESC LIMIT 1"
+                )
+                if row and row["chain_hash"]:
+                    self._redis.set("scitt:chain_hash", bytes(row["chain_hash"]))
+                    self._redis.set("scitt:leaf_index", row["leaf_index"] + 1)
+                    logger.info(
+                        "redis_chain_seeded",
+                        leaf_index=row["leaf_index"],
+                        chain_hash=bytes(row["chain_hash"]).hex()[:16],
+                    )
+                else:
+                    self._redis.set("scitt:leaf_index", 0)
+                    logger.info("redis_chain_initialized_empty")
 
         logger.info("postgres_store_initialized", dsn=self.dsn.split("@")[-1])
 
@@ -95,8 +123,16 @@ class PostgresStore(StorageBackend):
         issuer: Optional[str] = None,
         subject: Optional[str] = None,
         content_type: Optional[str] = None,
-    ) -> int:
-        """Append a new entry atomically using PostgreSQL row-level locking."""
+    ) -> Tuple[int, bytes]:
+        """Append a new entry with hash chain via Redis.
+
+        Uses Redis for chain state (leaf_index + chain_hash) since it's
+        single-threaded and serializes naturally. Postgres is just for
+        durable storage of the entry.
+
+        Returns:
+            Tuple of (leaf_index, chain_hash)
+        """
         start_time = time.time()
         entry_id = statement_hash.hex()
 
@@ -106,43 +142,48 @@ class PostgresStore(StorageBackend):
 
             if not self.pool:
                 raise RuntimeError("Storage not initialized")
+            if not self._redis:
+                raise RuntimeError("Redis not initialized")
 
             try:
-                async with self.pool.acquire() as conn:
-                    async with conn.transaction():
-                        # Atomic increment: UPDATE ... RETURNING gives us the leaf index
-                        row = await conn.fetchrow(
-                            """
-                            UPDATE scitt.service_state
-                            SET value = (value::int + 1)::text, updated_at = NOW()
-                            WHERE key = 'tree_size'
-                            RETURNING (value::int - 1) AS leaf_index
-                            """
-                        )
-                        leaf_index = row["leaf_index"]
+                # Redis serializes the chain: get prev hash, assign index, set new hash
+                with self._redis.lock("scitt:chain_lock", timeout=10):
+                    prev_hash = self._redis.get("scitt:chain_hash")
+                    leaf_index = self._redis.incr("scitt:leaf_index") - 1
 
-                        await conn.execute(
-                            """
-                            INSERT INTO scitt.entries
-                            (statement_hash, cose_sign1, issuer, subject, content_type, leaf_index)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            """,
-                            statement_hash, cose_sign1, issuer, subject, content_type, leaf_index,
-                        )
+                    if prev_hash is None:
+                        chain_hash = hashlib.sha256(statement_hash).digest()
+                    else:
+                        chain_hash = hashlib.sha256(prev_hash + statement_hash).digest()
+
+                    self._redis.set("scitt:chain_hash", chain_hash)
+
+                # Postgres INSERT outside the lock — no contention
+                async with self.pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO scitt.entries
+                        (statement_hash, cose_sign1, issuer, subject, content_type, leaf_index, chain_hash)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        """,
+                        statement_hash, cose_sign1, issuer, subject, content_type, leaf_index, chain_hash,
+                    )
 
                 duration = time.time() - start_time
                 metrics.db_operation_duration.record(duration, {"operation": "append_entry"})
                 metrics.db_operation_count.add(1, {"operation": "append_entry"})
                 span.set_attribute("entry.leaf_index", leaf_index)
+                span.set_attribute("entry.chain_hash", chain_hash.hex())
 
                 logger.debug(
                     "entry_appended",
                     entry_id=entry_id,
                     leaf_index=leaf_index,
+                    chain_hash=chain_hash.hex(),
                     duration_seconds=duration,
                 )
 
-                return leaf_index
+                return leaf_index, chain_hash
 
             except Exception as e:
                 duration = time.time() - start_time

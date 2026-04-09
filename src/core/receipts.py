@@ -50,19 +50,17 @@ class ReceiptGenerator:
         self,
         statement_hash: bytes,
         leaf_index: int,
-        tree_size: int,
-        inclusion_proof: List[bytes],
+        chain_hash: bytes,
         issuer: Optional[str] = None,
         subject: Optional[str] = None,
     ) -> bytes:
         """
-        Create a COSE receipt with inclusion proof.
+        Create a COSE receipt with hash chain proof.
 
         Args:
             statement_hash: Hash of the original signed statement
-            leaf_index: Position in the tree
-            tree_size: Size of the tree at time of proof
-            inclusion_proof: List of sibling hashes for proof
+            leaf_index: Position in the chain
+            chain_hash: The chain hash at this position
             issuer: Original statement issuer
             subject: Original statement subject
 
@@ -75,55 +73,46 @@ class ReceiptGenerator:
         with tracer.start_as_current_span("receipt.create") as span:
             span.set_attribute("receipt.entry_id", entry_id)
             span.set_attribute("receipt.leaf_index", leaf_index)
-            span.set_attribute("receipt.tree_size", tree_size)
-            span.set_attribute("receipt.proof_length", len(inclusion_proof))
             if issuer:
                 span.set_attribute("receipt.issuer", issuer)
             if subject:
                 span.set_attribute("receipt.subject", subject)
 
             try:
-                # Build protected header
                 protected_header = {
-                    Algorithm: Es256,  # ES256
+                    Algorithm: Es256,
                     KID: self.signing_key.kid if self.signing_key.kid else b"ts-key",
                 }
 
-                # Add verifiable data structure info
-                protected_header[self.VDS_LABEL] = 1  # RFC 9162 SHA-256
+                # VDS type 2 = hash chain (custom, not RFC 9162 Merkle)
+                protected_header[self.VDS_LABEL] = 2
 
-                # Add claims
                 claims = {
-                    1: self.service_id,  # issuer (iss)
+                    1: self.service_id,  # issuer
                 }
                 if issuer:
                     claims[1] = issuer
                 if subject:
-                    claims[2] = subject  # subject (sub)
+                    claims[2] = subject
 
                 protected_header[self.CLAIMS_LABEL] = claims
 
-                # Build unprotected header with proofs
+                # Hash chain proof: just the chain_hash and position
                 unprotected_header = {
                     self.PROOFS_LABEL: {
                         self.INCLUSION_PROOF_LABEL: [
-                            cbor2.dumps([tree_size, leaf_index, inclusion_proof])
+                            cbor2.dumps([leaf_index, chain_hash])
                         ]
                     }
                 }
 
-                # Create COSE Sign1 with detached payload (null)
                 msg = Sign1Message(
                     phdr=protected_header,
                     uhdr=unprotected_header,
-                    payload=None,  # Detached payload per SCITT spec
+                    payload=None,
                 )
 
-                # Sign the message
                 msg.key = self.signing_key
-
-                # Encode to COSE format with detached payload for signing
-                # The statement hash is the detached content that gets signed
                 cose_bytes = msg.encode(detached_payload=statement_hash)
 
                 duration = time.time() - start_time
@@ -134,7 +123,7 @@ class ReceiptGenerator:
                     "receipt_created",
                     entry_id=entry_id,
                     leaf_index=leaf_index,
-                    tree_size=tree_size,
+                    chain_hash=chain_hash.hex()[:16],
                     duration_seconds=duration,
                 )
 

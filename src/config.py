@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     key_file: Optional[str] = None  # Path to signing key
     enable_auth: bool = False
 
+    # Redis (for hash chain state)
+    redis_url: str = "redis://redis:6379"
+
     # Performance
     max_tree_cache_size: int = 10000
 
