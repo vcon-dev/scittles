@@ -1,0 +1,114 @@
+name: Build and Push to ECR Public
+
+on:
+  push:
+    branches:
+      - main
+      - feature/observability-instrumentation
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag override (optional)'
+        required: false
+        default: ''
+
+env:
+  ECR_REGISTRY: public.ecr.aws/r4g1k2s3
+  ECR_REPOSITORY: vcon-dev/scittles
+  IMAGE_NAME: public.ecr.aws/r4g1k2s3/vcon-dev/scittles
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write  # Required for OIDC authentication
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate version tags
+        id: version
+        run: |
+          BASE_VERSION=$(date +"%Y.%m.%d")
+          GIT_SHORT_HASH=$(git rev-parse --short HEAD)
+          BRANCH_NAME="${GITHUB_REF_NAME}"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "git_short_hash=${GIT_SHORT_HASH}" >> $GITHUB_OUTPUT
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "build_time=${BUILD_TIME}" >> $GITHUB_OUTPUT
+
+          # Compute a safe branch slug for tagging
+          BRANCH_SLUG=$(echo "$BRANCH_NAME" | sed 's|/|-|g' | tr '[:upper:]' '[:lower:]')
+          echo "branch_slug=${BRANCH_SLUG}" >> $GITHUB_OUTPUT
+
+          if [[ "$BRANCH_NAME" == "main" ]]; then
+            echo "is_main=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_main=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Manual tag override
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
+            # CalVer date tag (both branches)
+            type=raw,value=${{ steps.version.outputs.base_version }}-${{ steps.version.outputs.branch_slug }}
+            # Git short hash (both branches)
+            type=raw,value=${{ steps.version.outputs.git_short_hash }}
+            # Branch slug tag (e.g. "main" or "feature-observability-instrumentation")
+            type=raw,value=${{ steps.version.outputs.branch_slug }}
+            # latest — only for main
+            type=raw,value=latest,enable=${{ steps.version.outputs.is_main == 'true' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          provenance: false  # Disable attestations for ECR Public compatibility
+
+      - name: Summary
+        run: |
+          echo "## Docker Image Published :whale:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ steps.version.outputs.branch_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Git Commit:** \`${{ steps.version.outputs.git_short_hash }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Time:** \`${{ steps.version.outputs.build_time }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags pushed:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pull the feature branch image:**" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.IMAGE_NAME }}:feature-observability-instrumentation" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
