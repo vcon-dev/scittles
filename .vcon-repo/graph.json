@@ -1,0 +1,383 @@
+{
+  "schema_version": "1.0.0",
+  "repo": "scittles",
+  "repo_version": "0.1.0",
+  "archetype": "python-library",
+  "generated_at": "2026-04-16T15:15:45.275282+00:00",
+  "stats": {
+    "node_count": 48,
+    "edge_count": 10
+  },
+  "nodes": [
+    {
+      "id": "dependency:pycose",
+      "type": "dependency",
+      "name": "pycose",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:cbor2",
+      "type": "dependency",
+      "name": "cbor2",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:cryptography",
+      "type": "dependency",
+      "name": "cryptography",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:fastapi",
+      "type": "dependency",
+      "name": "fastapi",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:uvicorn",
+      "type": "dependency",
+      "name": "uvicorn",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:pydantic",
+      "type": "dependency",
+      "name": "pydantic",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:pydantic-settings",
+      "type": "dependency",
+      "name": "pydantic-settings",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:aiosqlite",
+      "type": "dependency",
+      "name": "aiosqlite",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:asyncpg",
+      "type": "dependency",
+      "name": "asyncpg",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-api",
+      "type": "dependency",
+      "name": "opentelemetry-api",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-sdk",
+      "type": "dependency",
+      "name": "opentelemetry-sdk",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-instrumentation-fastapi",
+      "type": "dependency",
+      "name": "opentelemetry-instrumentation-fastapi",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-instrumentation-sqlite3",
+      "type": "dependency",
+      "name": "opentelemetry-instrumentation-sqlite3",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-exporter-otlp-proto-grpc",
+      "type": "dependency",
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:opentelemetry-exporter-prometheus",
+      "type": "dependency",
+      "name": "opentelemetry-exporter-prometheus",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "dependency:structlog",
+      "type": "dependency",
+      "name": "structlog",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "class:TransparencyServiceAPI",
+      "type": "class",
+      "name": "TransparencyServiceAPI",
+      "file": "src/api/endpoints.py",
+      "line": 19
+    },
+    {
+      "id": "class:TransparencyConfiguration",
+      "type": "class",
+      "name": "TransparencyConfiguration",
+      "file": "src/api/models.py",
+      "line": 6
+    },
+    {
+      "id": "class:RegistrationResponse",
+      "type": "class",
+      "name": "RegistrationResponse",
+      "file": "src/api/models.py",
+      "line": 15
+    },
+    {
+      "id": "class:RegistrationPending",
+      "type": "class",
+      "name": "RegistrationPending",
+      "file": "src/api/models.py",
+      "line": 23
+    },
+    {
+      "id": "class:ReceiptResponse",
+      "type": "class",
+      "name": "ReceiptResponse",
+      "file": "src/api/models.py",
+      "line": 30
+    },
+    {
+      "id": "class:ErrorResponse",
+      "type": "class",
+      "name": "ErrorResponse",
+      "file": "src/api/models.py",
+      "line": 40
+    },
+    {
+      "id": "class:Settings",
+      "type": "class",
+      "name": "Settings",
+      "file": "src/config.py",
+      "line": 5
+    },
+    {
+      "id": "class:MerkleTree",
+      "type": "class",
+      "name": "MerkleTree",
+      "file": "src/core/merkle.py",
+      "line": 14
+    },
+    {
+      "id": "class:MerkleTreeBuilder",
+      "type": "class",
+      "name": "MerkleTreeBuilder",
+      "file": "src/core/merkle.py",
+      "line": 189
+    },
+    {
+      "id": "class:ReceiptGenerator",
+      "type": "class",
+      "name": "ReceiptGenerator",
+      "file": "src/core/receipts.py",
+      "line": 20
+    },
+    {
+      "id": "class:StatementValidator",
+      "type": "class",
+      "name": "StatementValidator",
+      "file": "src/core/receipts.py",
+      "line": 195
+    },
+    {
+      "id": "function:verify_inclusion",
+      "type": "function",
+      "name": "verify_inclusion",
+      "file": "src/core/verification.py",
+      "line": 7
+    },
+    {
+      "id": "function:create_app",
+      "type": "function",
+      "name": "create_app",
+      "file": "src/main.py",
+      "line": 14
+    },
+    {
+      "id": "function:main",
+      "type": "function",
+      "name": "main",
+      "file": "src/main.py",
+      "line": 75
+    },
+    {
+      "id": "function:add_trace_context",
+      "type": "function",
+      "name": "add_trace_context",
+      "file": "src/observability/logging.py",
+      "line": 14
+    },
+    {
+      "id": "function:setup_logging",
+      "type": "function",
+      "name": "setup_logging",
+      "file": "src/observability/logging.py",
+      "line": 26
+    },
+    {
+      "id": "function:get_logger",
+      "type": "function",
+      "name": "get_logger",
+      "file": "src/observability/logging.py",
+      "line": 62
+    },
+    {
+      "id": "class:Metrics",
+      "type": "class",
+      "name": "Metrics",
+      "file": "src/observability/metrics.py",
+      "line": 7
+    },
+    {
+      "id": "function:get_metrics",
+      "type": "function",
+      "name": "get_metrics",
+      "file": "src/observability/metrics.py",
+      "line": 89
+    },
+    {
+      "id": "class:ObservabilityMiddleware",
+      "type": "class",
+      "name": "ObservabilityMiddleware",
+      "file": "src/observability/middleware.py",
+      "line": 20
+    },
+    {
+      "id": "function:setup_opentelemetry",
+      "type": "function",
+      "name": "setup_opentelemetry",
+      "file": "src/observability/otel.py",
+      "line": 35
+    },
+    {
+      "id": "function:get_tracer",
+      "type": "function",
+      "name": "get_tracer",
+      "file": "src/observability/otel.py",
+      "line": 98
+    },
+    {
+      "id": "function:get_meter",
+      "type": "function",
+      "name": "get_meter",
+      "file": "src/observability/otel.py",
+      "line": 103
+    },
+    {
+      "id": "function:setup_prometheus_exporter",
+      "type": "function",
+      "name": "setup_prometheus_exporter",
+      "file": "src/observability/prometheus.py",
+      "line": 15
+    },
+    {
+      "id": "function:get_metrics_endpoint",
+      "type": "function",
+      "name": "get_metrics_endpoint",
+      "file": "src/observability/prometheus.py",
+      "line": 46
+    },
+    {
+      "id": "class:StorageBackend",
+      "type": "class",
+      "name": "StorageBackend",
+      "file": "src/storage/base.py",
+      "line": 5
+    },
+    {
+      "id": "class:PostgresStore",
+      "type": "class",
+      "name": "PostgresStore",
+      "file": "src/storage/postgres_store.py",
+      "line": 19
+    },
+    {
+      "id": "class:SQLiteStore",
+      "type": "class",
+      "name": "SQLiteStore",
+      "file": "src/storage/sqlite_store.py",
+      "line": 16
+    },
+    {
+      "id": "interface:scittles",
+      "type": "interface",
+      "name": "scittles",
+      "description": "CLI: src.main:main",
+      "file": "pyproject.toml"
+    },
+    {
+      "id": "config:OTEL_EXPORTER_OTLP_ENDPOINT",
+      "type": "config",
+      "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "file": "src/observability/otel.py"
+    },
+    {
+      "id": "artifact:docker-image",
+      "type": "artifact",
+      "name": "Docker image",
+      "file": "Dockerfile"
+    },
+    {
+      "id": "document:readme-md",
+      "type": "document",
+      "name": "README.md",
+      "file": "README.md"
+    }
+  ],
+  "edges": [
+    {
+      "from": "class:TransparencyConfiguration",
+      "to": "class:BaseModel",
+      "type": "inherits"
+    },
+    {
+      "from": "class:RegistrationResponse",
+      "to": "class:BaseModel",
+      "type": "inherits"
+    },
+    {
+      "from": "class:RegistrationPending",
+      "to": "class:BaseModel",
+      "type": "inherits"
+    },
+    {
+      "from": "class:ReceiptResponse",
+      "to": "class:BaseModel",
+      "type": "inherits"
+    },
+    {
+      "from": "class:ErrorResponse",
+      "to": "class:BaseModel",
+      "type": "inherits"
+    },
+    {
+      "from": "class:Settings",
+      "to": "class:BaseSettings",
+      "type": "inherits"
+    },
+    {
+      "from": "class:ObservabilityMiddleware",
+      "to": "class:BaseHTTPMiddleware",
+      "type": "inherits"
+    },
+    {
+      "from": "class:StorageBackend",
+      "to": "class:ABC",
+      "type": "inherits"
+    },
+    {
+      "from": "class:PostgresStore",
+      "to": "class:StorageBackend",
+      "type": "inherits"
+    },
+    {
+      "from": "class:SQLiteStore",
+      "to": "class:StorageBackend",
+      "type": "inherits"
+    }
+  ],
+  "subsystems": []
+}
