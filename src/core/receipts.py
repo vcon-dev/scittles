@@ -49,6 +49,7 @@ class ReceiptGenerator:
     def create_receipt(
         self,
         statement_hash: bytes,
+        root_hash: bytes,
         leaf_index: int,
         tree_size: int,
         inclusion_proof: List[bytes],
@@ -58,8 +59,14 @@ class ReceiptGenerator:
         """
         Create a COSE receipt with inclusion proof.
 
+        Per draft-ietf-cose-merkle-tree-proofs, the detached payload is the
+        Merkle root hash (not the statement hash). This forces verifiers to
+        recompute the root from the inclusion proof before checking the signature,
+        which authenticates the proof despite it living in the unprotected header.
+
         Args:
-            statement_hash: Hash of the original signed statement
+            statement_hash: Hash of the original signed statement (used as entry ID)
+            root_hash: Merkle tree root hash at registration time (detached payload)
             leaf_index: Position in the tree
             tree_size: Size of the tree at time of proof
             inclusion_proof: List of sibling hashes for proof
@@ -122,9 +129,10 @@ class ReceiptGenerator:
                 # Sign the message
                 msg.key = self.signing_key
 
-                # Encode to COSE format with detached payload for signing
-                # The statement hash is the detached content that gets signed
-                cose_bytes = msg.encode(detached_payload=statement_hash)
+                # Encode with Merkle root as detached payload per spec.
+                # Verifier recomputes root from the inclusion proof and checks
+                # that the signature matches — this authenticates the proof.
+                cose_bytes = msg.encode(detached_payload=root_hash)
 
                 duration = time.time() - start_time
                 metrics.receipt_generation_duration.record(duration)

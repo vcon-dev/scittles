@@ -1,8 +1,11 @@
 import asyncio
+import base64
+import json
 from fastapi import FastAPI, Response, Request, status
 import cbor2
 import time
 from opentelemetry import trace
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ..storage.base import StorageBackend
 from ..core.merkle import MerkleTreeBuilder
@@ -44,11 +47,30 @@ class TransparencyServiceAPI:
                 issuer=self.service_url,
                 registration_endpoint=f"{self.service_url}/entries",
                 receipt_endpoint=f"{self.service_url}/entries/{{entry_id}}",
+                jwks_uri=f"{self.service_url}/jwks",
             )
             return Response(
                 content=cbor2.dumps(config.model_dump()),
                 media_type="application/cbor",
             )
+
+        @self.app.get("/jwks")
+        async def get_jwks():
+            """Return JWKS with the transparency service's public verification key."""
+            key = self.receipt_generator.signing_key
+            kid = key.kid
+            jwk = {
+                "keys": [{
+                    "kty": "EC",
+                    "crv": "P-256",
+                    "x": base64.urlsafe_b64encode(key.x).rstrip(b"=").decode(),
+                    "y": base64.urlsafe_b64encode(key.y).rstrip(b"=").decode(),
+                    "use": "sig",
+                    "alg": "ES256",
+                    "kid": kid.decode() if isinstance(kid, bytes) else (kid or "ts-key"),
+                }]
+            }
+            return Response(content=json.dumps(jwk), media_type="application/json")
 
         @self.app.post(
             "/entries",
@@ -142,9 +164,14 @@ class TransparencyServiceAPI:
                         )
                         span.set_attribute("merkle.proof_length", len(inclusion_proof))
 
+                        # Root hash is computed while still under the registration lock,
+                        # so it matches the tree_size used for the inclusion proof.
+                        root_hash = self.merkle_builder.get_root_sync()
+
                         # Generate receipt
                         receipt = self.receipt_generator.create_receipt(
                             statement_hash=statement_hash,
+                            root_hash=root_hash,
                             leaf_index=leaf_index,
                             tree_size=tree_size,
                             inclusion_proof=inclusion_proof,
@@ -237,9 +264,14 @@ class TransparencyServiceAPI:
                 )
                 span.set_attribute("merkle.proof_length", len(inclusion_proof))
 
+                # Root for the snapshot tree_size — uses stored nodes so it
+                # stays consistent with the proof even if the tree has grown.
+                root_hash = self.merkle_builder.get_root_sync(tree_size)
+
                 # Generate receipt
                 receipt = self.receipt_generator.create_receipt(
                     statement_hash=statement_hash,
+                    root_hash=root_hash,
                     leaf_index=leaf_index,
                     tree_size=tree_size,
                     inclusion_proof=inclusion_proof,
