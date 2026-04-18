@@ -1,3 +1,7 @@
+networks:
+  conserver:
+    external: true
+
 services:
   scittles:
     build:
@@ -5,22 +9,29 @@ services:
       dockerfile: Dockerfile
     container_name: scittles
     ports:
-      - "8000:8000"
+      - "8080:8000"
     volumes:
       - ./data:/app/data
+      - ./keys:/app/keys
+    networks:
+      - conserver
     environment:
       # Core Configuration
       - SCITT_DB_PATH=/app/data/transparency.db
+      # Key injection — set SCITT_SIGNING_KEY (base64 PEM) for containers/k8s,
+      # or rely on SCITT_KEY_FILE for local dev (generate-and-persist).
+      - SCITT_SIGNING_KEY=${SCITT_SIGNING_KEY:-}
+      - SCITT_KEY_FILE=/app/keys/signing-key.pem
       - SCITT_HOST=0.0.0.0
       - SCITT_PORT=8000
-      - SCITT_SERVICE_URL=${SCITT_SERVICE_URL:-https://transparency.example}
-      
+      - SCITT_SERVICE_URL=${SCITT_SERVICE_URL:-http://scittles:8000}
+
       # Observability Configuration
       - SCITT_LOG_LEVEL=${SCITT_LOG_LEVEL:-INFO}
-      - SCITT_LOG_FORMAT=${SCITT_LOG_FORMAT:-json}
-      - SCITT_OTEL_ENABLED=${SCITT_OTEL_ENABLED:-true}
+      - SCITT_LOG_FORMAT=${SCITT_LOG_FORMAT:-text}
+      - SCITT_OTEL_ENABLED=${SCITT_OTEL_ENABLED:-false}
       - SCITT_OTEL_SERVICE_NAME=${SCITT_OTEL_SERVICE_NAME:-scittles}
-      - SCITT_OTEL_EXPORTER=${SCITT_OTEL_EXPORTER:-prometheus,console}
+      - SCITT_OTEL_EXPORTER=${SCITT_OTEL_EXPORTER:-console}
       - SCITT_OTEL_ENDPOINT=${SCITT_OTEL_ENDPOINT:-}
       - SCITT_OTEL_HEADERS=${SCITT_OTEL_HEADERS:-}
       - SCITT_PROMETHEUS_PORT=${SCITT_PROMETHEUS_PORT:-9090}

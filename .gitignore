@@ -47,6 +47,12 @@ htmlcov/
 .env
 .env.local
 
+# Runtime data (SQLite DB, generated at runtime, never committed)
+data/
+
+# Signing keys (generated at runtime, never committed)
+keys/
+
 # OS
 .DS_Store
 Thumbs.db

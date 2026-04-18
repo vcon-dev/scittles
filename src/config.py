@@ -21,7 +21,8 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Security
-    key_file: Optional[str] = None  # Path to signing key
+    signing_key: Optional[str] = None  # Base64-encoded PEM (preferred for containers/k8s)
+    key_file: Optional[str] = None     # Path to PEM file (fallback for local dev)
     enable_auth: bool = False
 
     # Performance
