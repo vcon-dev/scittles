@@ -3,7 +3,7 @@
   "repo": "scittles",
   "repo_version": "0.1.0",
   "archetype": "python-library",
-  "generated_at": "2026-04-16T15:15:45.275282+00:00",
+  "generated_at": "2026-04-18T12:29:41.788449+00:00",
   "stats": {
     "node_count": 48,
     "edge_count": 10
@@ -110,7 +110,7 @@
       "type": "class",
       "name": "TransparencyServiceAPI",
       "file": "src/api/endpoints.py",
-      "line": 19
+      "line": 22
     },
     {
       "id": "class:TransparencyConfiguration",
@@ -180,7 +180,7 @@
       "type": "class",
       "name": "StatementValidator",
       "file": "src/core/receipts.py",
-      "line": 195
+      "line": 203
     },
     {
       "id": "function:verify_inclusion",
@@ -194,14 +194,14 @@
       "type": "function",
       "name": "create_app",
       "file": "src/main.py",
-      "line": 14
+      "line": 63
     },
     {
       "id": "function:main",
       "type": "function",
       "name": "main",
       "file": "src/main.py",
-      "line": 75
+      "line": 122
     },
     {
       "id": "function:add_trace_context",
